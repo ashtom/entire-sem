@@ -310,13 +310,23 @@ Relation vocabulary:
   not resolved in this pass.
 - `USES_TYPE` — a function/method references a local type in its signature
   (resolved against known type symbols, so primitives and library types are
-  excluded). Covers parameter and return types without per-language signature
-  parsing; positional `PARAM_TYPE`/`RETURNS_TYPE` remain a finer follow-up.
+  excluded). This is the broad signature edge.
+- `PARAM_TYPE` / `RETURNS_TYPE` — a function/method references a local type in
+  parameter or return position. These positional edges are emitted only when the
+  parser captured enough signature text to classify the reference.
 - `HANDLES_ROUTE` — a handler registers an HTTP route (path on a line carrying
   routing context: a verb/route method call or mapping decorator).
+- `HANDLES_GRPC` / `HANDLES_GRAPHQL` / `HANDLES_TRPC` — service boundary edges
+  from protobuf RPC declarations, GraphQL operation literals, JS/TS GraphQL
+  resolver-map fields and modular resolver root objects (`Query`, `Mutation`,
+  `Subscription`), GraphQL schema root fields, and tRPC procedure declarations
+  to stable external endpoint nodes.
 - `HTTP_CALLS` — an outbound HTTP client call (fetch/axios/requests/httpx/http
   client) to a path. Client calls and route registrations to the same path
-  share an `external:route:<path>` node, enabling client-to-route matching.
+  share an `external:route:<path>` node, enabling client-to-route matching. When
+  that static route has a local handler/boundary in the snapshot, the provider
+  also emits a direct pattern-resolved `CALLS` edge from the client symbol to
+  that handler/boundary symbol.
 - `EMITS` / `LISTENS_ON` — pub/sub and event-emitter calls
   (`emit`/`publish`/`dispatch` and `on`/`subscribe`/`addEventListener`). Emitter
   and listener of the same name share an `external:channel:<name>` node. Weak
@@ -326,6 +336,22 @@ Relation vocabulary:
   references another block (e.g. `aws_vpc.main.id`, `var.cidr`) depends on it.
   Blocks are indexed by their referenceable name and references resolved within
   the module.
+- `CONFIGURES` — configuration artifacts point at stable external config nodes:
+  HCL blocks, Dockerfile stages, Kubernetes-looking YAML sections, and GitHub
+  Actions workflow jobs, Kustomize sections, common JSON/TOML/XML project
+  configuration, and Make targets.
+- `DATA_FLOWS` — high-confidence local return-flow edge from a callee to a
+  caller when a callable returns the result of another resolved callable, plus
+  direct, branch, conditional/fallback, and expression-assigned local
+  assignment-then-return cases, plus
+  conservative local caller-to-callee forwarding for exact/import-resolved
+  parameter, alias, destructured alias, object-field/object-literal, and
+  collection-element cases.
+- `ASYNC_CALLS` — async call-site edge for language-level async constructs such
+  as Go `go` statements, JavaScript/TypeScript/Python `await`, and common
+  spawn/promise patterns when the target resolves to a known symbol.
+- `FILE_CHANGES_WITH` — bounded local git co-change edge between files that
+  repeatedly changed together in recent history.
 - `TESTS` — a test function maps to the unit it covers by naming convention
   (`TestFoo`/`testFoo` → `Foo`, `test_foo` → `foo`, `FooTest`/`FooSpec` → `Foo`)
   when the subject resolves to a non-test function/method/type.
@@ -341,8 +367,13 @@ otherwise. C# cannot syntactically separate a base class from interfaces, so it
 uses the `I<Upper>` naming heuristic at lower confidence. Per-language support
 is reported in `capabilities` under `relation_support_by_language`.
 
-Relation extraction continues to grow. Still to come: positional
-`PARAM_TYPE`/`RETURNS_TYPE`, and data-flow relations such as `ACCESSES`.
+Relation extraction continues to grow. Remaining known expansion areas are
+deeper fallback-format semantics and deeper flow analysis; the current contract
+already emits positional type, field-access, async, service-boundary,
+configuration, high-confidence direct, assigned, branch-assigned, and simple
+conditional/fallback return-flow plus expression assignment-then-return flow,
+bounded co-change edges, and lightweight inventory for common web/document/
+config formats.
 
 ## Warnings And Partial Failures
 
@@ -416,9 +447,14 @@ Useful existing foundation:
 
 - Go implementation.
 - Isolated tree-sitter parser boundary.
-- Bash, C, C++, C#, CUE, Elixir, Go, Groovy, HCL/Terraform, Java,
-  JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP, Protocol Buffers, Python,
-  Ruby, Rust, Scala, SQL, and Swift support.
+- Rich parser support for Bash, C, C++, C#, CUE, Elixir, Go, Groovy,
+  HCL/Terraform, Java, JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP,
+  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, and Swift.
+- Lightweight deterministic inventory support for 158+ reported
+  languages/filetypes. Inventory-only entries emit file/symbol structure but do
+  not claim call/type/data-flow analysis. The capabilities JSON exposes this
+  distinction through `semantic_languages` and `inventory_only_languages`; see
+  `docs/language-support.md` for the current generated matrix.
 - Entity signature and body-hash comparison.
 - Checkpoint-aware semantic diffs.
 
@@ -436,6 +472,8 @@ Remaining gaps:
 - Relation extraction is still intentionally heuristic.
 - File moves, renames, and duplicate same-name symbols need stronger ID
   reconciliation.
-- `IMPLEMENTS`, `EXTENDS`, `OVERRIDES`, and `ACCESSES` are future relation types,
-  not Phase 1 contract records yet.
+- `IMPLEMENTS`, `EXTENDS`, `OVERRIDES`, `ACCESSES`, field-access,
+  data-flow, service-boundary, config, and resource-dependency relation
+  families are implemented for supported high-confidence cases, but they remain
+  heuristic and not compiler/type-checker complete.
 - Performance and memory budgets need larger benchmark coverage.

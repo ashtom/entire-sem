@@ -14,25 +14,62 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
 - Tree-sitter-backed parser boundary is isolated behind `internal/sem`.
 - Supports core languages: Bash, C/C++, C#, CUE, Elixir, Go, Groovy,
   HCL/Terraform, Java, JavaScript/TypeScript, Kotlin, Lua, OCaml, PHP,
-  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, Swift, YAML/GitHub Actions.
+  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, Swift, YAML/GitHub Actions,
+  plus fallback extraction for Dockerfile, Kustomize, JSON/JSON5, TOML, XML,
+  Make, Markdown, HTML/CSS, Vue, and Svelte.
 - Emits semantic diffs for commits, checkpoints, and arbitrary refs.
 - Emits provider records via `snapshot`, `symbols`, and `edges`.
 - Emits `doctor`, `version`, and `capabilities`.
 - Has stable `compound-v1` symbol IDs for ordinary edits.
 - Reports partial failures and no-egress posture.
 
-## Next Steps and Goals
+## Delivered Capabilities And Remaining Goals
 
-- Relation extraction is intentionally heuristic.
-- Calls are name-based in many cases and lack language-aware resolution.
-- Rename/move reconciliation is weak.
-- Duplicate same-name symbols can destabilize IDs.
-- OO/type relations are missing from the emitted contract.
-- Field access and data-flow relations are missing.
-- Cross-service route/client/channel relations are shallow.
-- IaC resource extraction is incomplete.
-- Language coverage should expand by priority tier and be reported exactly. Support at least 150 languages.
-- Performance and memory claims need reproducible benchmark evidence.
+- Relation extraction remains intentionally confidence-scored and honest about
+  heuristics.
+- Calls are resolved exactly where the provider has enough local information,
+  with name-only and pattern-based edges labeled as such.
+- Stable symbol IDs include signature disambiguation for duplicate names.
+- OO/type relations are emitted: `EXTENDS`, `INHERITS`, `IMPLEMENTS`,
+  `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, and `RETURNS_TYPE`.
+- Field access and high-confidence data-flow relations are emitted:
+  `READS_FIELD`, `WRITES_FIELD`, `ACCESSES`, and `DATA_FLOWS`, including direct
+  `return helper()`, local assignment followed by bare `return value`, simple
+  destructured assignment followed by bare `return value`, simple
+  property return from an assigned callee result such as
+  `const result = helper(); return result.data`, simple
+  branch assignment to the same returned local, simple JS/TS and Python
+  conditional return expressions, simple JS/TS and Python fallback return
+  expressions, simple JS/TS and Python conditional/fallback assignment followed
+  by bare `return value`, exact argument forwarding, conservative
+  parameter-property forwarding for direct `param.field` or literal-key
+  `param[...]` arguments, conservative parameter-property alias forwarding
+  for locals assigned from `param.field` or literal-key `param[...]`,
+  conservative parameter-alias forwarding including straight-line multi-hop
+  alias chains,
+  conservative destructured parameter-alias forwarding, and
+  conservative object-field forwarding when a caller parameter is assigned into
+  a local object field directly or through a direct alias, simple
+  object-literal forwarding including JS/TS `key: param`, JS/TS shorthand
+  fields, Python dict literal fields, and direct parameter aliases, plus
+  conservative collection-element forwarding when a caller parameter or direct
+  alias is inserted into a local collection, `Map.set(...)`, or array/list
+  literal, conservative
+  JS/TS callback-element forwarding when a parameter-owned collection or direct
+  alias is iterated with common collection methods and the callback forwards
+  the element to a callee, and direct object or array/list literal argument
+  forwarding to a resolved callee.
+- Service and async boundaries are emitted: route/client/channel edges plus
+  `HANDLES_GRPC`, `HANDLES_GRAPHQL`, `HANDLES_TRPC`, and `ASYNC_CALLS`.
+- IaC/configuration extraction emits HCL dependencies and `CONFIGURES` edges for
+  HCL blocks, Dockerfile stages, Kubernetes-looking YAML, Kubernetes
+  image/env/port declarations, Kustomize, common JSON/TOML/XML project config,
+  Make targets, and GitHub Actions.
+- Recent-history co-change extraction emits bounded `FILE_CHANGES_WITH` edges.
+- Language coverage is reported exactly through capabilities, warnings, and
+  partial failures. Additional formats remain an expansion goal.
+- Performance and memory claims are backed by local benchmark tooling; external
+  large-corpus proof runs remain an operations task.
 
 ## Design Rules
 
@@ -104,12 +141,27 @@ Add priority relations:
 - `TESTS`
 - `SIMILAR_TO`
 
-Defer until a later phase:
+Remain out of provider scope or later expansion:
 
-- `DATA_FLOWS`
-- `ASYNC_CALLS`
-- `FILE_CHANGES_WITH`
 - cross-repo `CROSS_*` edges, unless Brain asks for provider-level support.
+- deeper data-flow beyond high-confidence local direct/assigned return-flow,
+  destructured assignment-return flow, assigned property-return flow,
+  simple branch-assigned return-flow, simple JS/TS and Python conditional
+  return-flow, simple JS/TS and Python fallback return-flow, simple expression
+  assignment-then-return flow, exact/import-resolved argument-forwarding flow,
+  conservative parameter-property forwarding flow, conservative
+  parameter-property alias forwarding flow, conservative parameter-alias
+  forwarding flow including straight-line multi-hop alias chains, conservative
+  destructured parameter-alias forwarding flow, conservative local
+  object-field forwarding flow, conservative local
+  object-literal forwarding flow including JS/TS shorthand, Python dict
+  literals, and direct parameter aliases, conservative local
+  collection-element, `Map.set(...)`, or collection-literal forwarding flow
+  including direct parameter aliases, conservative JS/TS collection-callback element forwarding,
+  and direct object/array/list literal argument forwarding.
+- deeper semantics for fallback formats where only lightweight structure is
+  currently emitted.
+- more parser grammars when a real repo or benchmark fixture needs them.
 
 ## Work Packages
 
@@ -130,12 +182,16 @@ Tasks:
   relation counts.
 - Add no-egress tests that fail if provider commands attempt network access.
 - Add a fixture-report command or test artifact that Brain can consume for the
-  cross-repo capability matrix.
+  cross-repo capability matrix. Delivered locally as the checked
+  `internal/sem/testdata/fixtures/quality_coverage.json` coverage artifact,
+  verified by `TestProviderGoldenFixtureQualityCoverageReport`.
 
 Acceptance:
 
 - `go test ./...` validates the current provider contract.
 - A baseline report exists for all fixture repos.
+- A checked fixture coverage artifact records current language, symbol-kind, and
+  relation-type coverage for the golden corpus.
 - Current known false positives and false negatives are documented.
 
 ### WP2: Stable Identity And Reconciliation
@@ -167,9 +223,40 @@ Objective: improve the graph backbone used by call resolution and impact.
 Tasks:
 
 - Build manifest readers for priority ecosystems:
-  `go.mod`, `package.json`, `tsconfig.json`, `pyproject.toml`, `setup.cfg`,
-  `requirements.txt`, `Cargo.toml`, `pom.xml`, `build.gradle`, `.csproj`,
-  `composer.json`.
+  `requirements.txt`, `Cargo.toml`, `.csproj`, and `composer.json`. `go.mod`
+  module import resolution is implemented for local Go packages present in the
+  snapshot; root `package.json` package self-imports, `exports`, `imports`, root
+  and scoped import maps, nested workspace/package `package.json` names and
+  `exports`, and simple `tsconfig.json` `compilerOptions.paths` aliases are
+  implemented for local JS/TS files, including local-file `extends`
+  inheritance where child path mappings override duplicate parent patterns, and
+  `tsconfig.json` `baseUrl` bare imports with inherited or child-overridden
+  local base URLs; `pyproject.toml` and
+  `setup.cfg` package names, configured setuptools package-find roots, root and
+  package-specific `package-dir`/`package_dir` mappings, inferred nested
+  `*/src` namespace roots, and simple `from package import module`
+  member-module candidates are implemented for local Python module resolution,
+  including literal, local-constant, and simple constant-hole f-string
+  `importlib.import_module(...)`,
+  direct or aliased `from importlib import import_module` calls,
+  `import importlib as name` aliases, and `__import__(...)` runtime imports; exact
+  Java/Kotlin/Scala package imports are implemented through package declarations
+  and source file names, with simple root Maven/Gradle package identity aliases;
+  `.csproj` root namespace and assembly-name aliases resolve unique C#
+  namespace imports to local C# source files; Composer PSR-4 autoload prefixes
+  resolve unique PHP namespace imports to local PHP source files; Cargo package names,
+  deterministic `#[path] mod` aliases, and straightforward
+  `pub use` re-exports are implemented for local Rust module files. JS/TS
+  literal CommonJS `require("...")`, literal dynamic
+  `import("...")`, and deterministic computed module strings built from known
+  local string constants, static array joins, or nested static
+  `path.join(...)`/`path.posix.join(...)` expressions emit `IMPORTS`;
+  CommonJS bindings from those computed modules also participate in imported
+  external call resolution. Maven/Gradle
+  classpath/build-variant modeling beyond root package identity, C# compiler
+  reference/type usage resolution beyond unique namespace-file matches,
+  complex Composer autoload/classmap semantics beyond PSR-4, arbitrary runtime-computed module names, and
+  macro-expanded or complex Rust name resolution remain open.
 - Normalize module/package roots and file-to-module ownership.
 - Resolve relative imports for Go, Python, JS/TS, Rust, Java, C#, PHP.
 - Emit `IMPORTS` edges to symbols/files when resolved, external endpoints when
@@ -180,6 +267,9 @@ Acceptance:
 
 - Fixture imports resolve to local files/modules where possible.
 - External imports remain explicit external records.
+- Literal and deterministic static computed dynamic imports are represented;
+  arbitrary runtime-computed module names remain unresolved rather than
+  fabricated.
 - Import failures are counted in completeness metrics, not hidden.
 
 ### WP4: Calls And Method Resolution
@@ -193,15 +283,39 @@ Tasks:
 - Scope call lookup by file, module, imports, container/class, receiver, and
   package.
 - Distinguish exact calls from unresolved name-only calls.
+- Emit imported external call edges for common Go, Python, and JS/TS import
+  forms when no local target resolves.
 - Avoid global ambiguous matches unless confidence is low and warning-coded.
 - Add method receiver resolution for Go, Python classes, TS/JS classes, Java,
   C#, Rust impl blocks, PHP classes.
+- Resolve direct constructor-chain calls such as `new Widget().label()` when
+  the local type and method symbols are known.
+- Resolve typed-parameter receiver calls for conservative `name: Type`,
+  `Type name`, and `name Type` signatures.
+- Resolve same-file factory-returned receiver calls such as
+  `makeWidget().label()` and assigned factory receivers such as
+  `const widget = makeWidget(); widget.label()` when the factory has an
+  explicit local return type and the target method is known on that type.
+- Resolve explicit two- and three-hop same-file returned receiver chains such
+  as `makeContainer().widget().label()` and
+  `makeContainer().section().widget().label()` when every intermediate method
+  has an explicit local return type.
 - Emit `CALLS` with `resolution`, `confidence`, `reason`, and evidence.
 
 Acceptance:
 
 - No broad global `sleep`/`run`/`handle` false positive patterns in fixtures.
 - Exact local calls rank above imported and name-only matches.
+- Imported external calls identify `external:symbol:<module>.<member>` targets
+  without fabricating local symbols.
+- Direct constructor-chain receiver calls resolve to local methods without
+  fabricating arbitrary returned receiver flow.
+- Typed-parameter receiver calls resolve only when the parameter type and
+  target method are known local symbols.
+- Factory-returned receiver calls, including assigned factory receivers and
+  explicit two- and three-hop returned receiver chains, resolve only when the
+  same file contains explicit local return types and the target method is known
+  on the resolved type.
 - Brain impact can trust high-confidence direct callers/callees.
 
 ### WP5: OO And Type Relations
@@ -233,14 +347,70 @@ Objective: make boundary and cross-service analysis competitive.
 Tasks:
 
 - Improve route handler detection:
-  Express/Fastify/Next.js, Flask/FastAPI/Django, Go `net/http`/chi/gin, Java
-  Spring, C# ASP.NET, PHP Laravel/Symfony.
+  Express/Fastify/Next.js, Django, Go `net/http`/chi/gin, Java Spring, C#
+  ASP.NET, PHP Laravel/Symfony, Ruby on Rails, NestJS, Python Tornado. Django `path(...)`
+  registrations, simple `re_path(...)` registrations, and URLConf
+  `include(...)` mounts, including string module paths and imported URLConf
+  aliases, resolve to local handler symbols when patterns are static. Go
+  `net/http` `HandleFunc` registrations and
+  `HandlerFunc` wrappers resolve to same-file local handler symbols when paths
+  are static or local literal constants; common Go chi/gin-style router method
+  registrations do the same. Flask/FastAPI-style Python route decorators are
+  implemented for direct app/router decorators. Tornado-style route tuples
+  resolve static same-file handler classes. Java Spring-style direct
+  mapping annotations are implemented for class-level prefix plus method-level
+  route composition. C# ASP.NET controller `[Route]` prefixes and HTTP-verb
+  attributes compose and bridge matching `HttpClient` calls; C# minimal API
+  `MapGet`/`MapPost` style registrations resolve static same-file handler
+  method groups. PHP Laravel route
+  declarations and prefix groups resolve local controller methods, and
+  Symfony/PHP route attributes compose class and method routes. Direct
+  Fastify/app/server JS/TS route registrations and imported or
+  CommonJS-exported Fastify plugin routes resolve local handler functions.
+  Ruby on Rails static
+  route declarations and `resources` declarations with default REST actions,
+  `only:`, and `except:` resolve local controller actions. Next.js, SvelteKit,
+  and Remix route-file boundaries bridge matching JS/TS clients, including
+  bracket-parameter and Remix `$param` paths.
+  NestJS controller/method decorators compose class prefixes with method routes
+  and bridge matching JS/TS HTTP clients.
+  Express/Hono-style JS/TS same-block router mounts plus
+  default-imported, CommonJS-exported, same-name, aliased named-import, and namespace-member imported router mounts
+  compose `app.use("/prefix", router)` or `app.route("/prefix", router)` with
+  static `router.get/post/...` registrations, including local literal constants
+  in mount prefixes and child router paths. FastAPI/Starlette-style local
+  `include_router(router, prefix="/prefix")` mounts compose with static
+  `@router.get/post/...` decorators, including locally resolved relative
+  imports. Deterministic static computed route expressions such as
+  `apiPrefix + "/health"`, template literals with known local route constants,
+  `String.raw` template literals with deterministic local holes, static array
+  joins, static `path.join(...)`/`path.posix.join(...)` calls, and
+  `new URL("/path", base).pathname` constants compose to a single route
+  endpoint.
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
-  C# HttpClient.
+  C# HttpClient. JS/TS clients support deterministic static computed paths
+  built from known local route constants, `String.raw` templates, inline static
+  array joins, static `path.join(...)`/`path.posix.join(...)` calls, or
+  `new URL("/path", base).pathname` constants; arbitrary runtime builders
+  remain out of scope.
 - Emit `HANDLES_ROUTE` and `HTTP_CALLS` with method, path, confidence, and
   source evidence.
-- Add GraphQL operation and resolver detection.
+- GraphQL operation literals emit `HANDLES_GRAPHQL` for named-operation
+  compatibility endpoints and selected root-field endpoints, including explicit
+  anonymous operations such as `query { viewer { id } }` and named fragments
+  spread at root operation scope when the fragment type is `Query`, `Mutation`,
+  or `Subscription`. JS/TS resolver-map
+  fields, modular resolver root objects such as `export const Query = { ... }`,
+  and GraphQL schema root fields, including multi-line field declarations, in
+  `type`/`extend type` `Query`, `Mutation`, and `Subscription` blocks now
+  emit `HANDLES_GRAPHQL`. Resolver fields cover inline
+  function/arrow handlers, subscription resolver objects, and named/member or
+  wrapped resolver references such as `user: getUser`,
+  `viewer: userResolvers.viewer`, and `user: withAuth(getUser)`. Matching
+  schema root fields emit exact local `CALLS` links to matching resolver
+  fields. Full schema validation, type checking, and non-root resolver type
+  analysis remain out of scope for the current heuristic pass.
 - Add gRPC/protobuf service extraction.
 - Add tRPC detection for TypeScript.
 - Add channel detection for common pub-sub/event APIs:
@@ -250,26 +420,106 @@ Tasks:
 Acceptance:
 
 - Boundary fixtures produce first-class external route/service/channel records.
-- Client-to-route matching works within a repo when paths are static.
+- Client-to-route matching works within a repo when paths are static or
+  deterministic static computed paths, including inline static array joins;
+  exact local matches also emit direct `CALLS` from the client symbol to the
+  local route handler/boundary symbol.
 - Dynamic route/client paths do not create high-confidence false edges.
+- Static computed route paths compose when all parts are local string literals
+  or known local route constants, including Express router mount prefixes,
+  template-literal route constants, static array joins, and child route paths;
+  arbitrary runtime builders remain out of scope.
 
 ### WP7: IaC And Resource Graph
 
 Objective: cover the infrastructure files agents frequently need for impact.
 
-Tasks:
+Delivered:
 
-- Add Dockerfile parser/extractor:
-  base images, stages, exposed ports, copied entrypoints.
-- Add Kubernetes YAML extractor:
-  Deployment, Service, Ingress, ConfigMap, Secret references, env vars,
-  service selectors.
-- Add Kustomize extractor:
-  overlays, resources, patches, bases.
-- Add Terraform/HCL resource graph:
-  resources, modules, variables, outputs, dependencies.
-- Emit resource nodes as external or resource records compatible with Brain.
-- Emit `CONFIGURES` and `RESOURCE_DEPENDS_ON`.
+- Dockerfile fallback extraction emits stages, `CONFIGURES` edges, and exact
+  `RESOURCE_DEPENDS_ON` edges for multi-stage `COPY --from=<stage>`
+  dependencies.
+- Kubernetes-looking YAML emits config sections plus conservative external
+  resource dependencies for common `ConfigMap`, `Secret`, service account, and
+  persistent-volume-claim references; when the referenced resource manifests are
+  present in the same provider snapshot, those named references also resolve to
+  exact local `RESOURCE_DEPENDS_ON` symbol edges. The same exact local
+  resolution covers RBAC role/subject references, owner references, Ingress
+  Service backends, Gateway API route backend refs, parent Gateway refs, and
+  Gateway listener certificateRefs, IngressClass refs, StorageClass refs,
+  PersistentVolume refs, RuntimeClass refs, PriorityClass refs, HPA scale
+  targets, projected ConfigMap/Secret volume refs, ConfigMap/Secret key refs,
+  image pull secrets, and Stakater Reloader ConfigMap/Secret reload
+  annotations. When the referring manifest declares
+  `metadata.namespace`, namespaced resource references also emit
+  namespace-qualified external endpoints such as
+  `external:config:kubernetes/secret/web/api-secret`, while preserving the
+  existing short endpoint.
+- Istio VirtualService route destinations and gateway refs, plus
+  DestinationRule hosts, resolve to exact local Service/Gateway resource
+  symbols when the referenced manifests are present.
+- Kubernetes resource symbols emit common container image, environment-variable,
+  and port declarations as `CONFIGURES` facts, multi-document Kubernetes YAML
+  emits one resource symbol per document, and Service, PodDisruptionBudget,
+  NetworkPolicy, ServiceMonitor, and PodMonitor selectors can depend on
+  matching target resources by labels with target-kind filters, including
+  CronJob targets whose labels live under `spec.jobTemplate.spec.template` and
+  Argo Rollout-style workload targets. KEDA ScaledObject name-only
+  `scaleTargetRef` entries and VerticalPodAutoscaler `targetRef` entries
+  resolve to workload targets by convention or explicit kind.
+- Kustomize manifests emit overlay/resource sections plus external
+  dependencies for listed resources, patches, and components.
+- Docker Compose manifests emit service resources, exact `depends_on`, `links`,
+  `extends.service`, and `network_mode: service:<name>` `RESOURCE_DEPENDS_ON`
+  edges between services, and common image/env/port `CONFIGURES` facts.
+- Koa/@koa-router `router.routes()` mounts, including static `koa-mount`
+  prefixes, compose with static router registrations and bridge exact matching
+  HTTP clients to local handlers.
+- Flask Blueprint `register_blueprint(..., url_prefix=...)` mounts compose
+  with Blueprint route decorators, including locally imported and aliased
+  Blueprint variables, and bridge exact matching Python HTTP clients to local
+  handlers.
+- Go router group prefixes such as `api := e.Group("/api")` compose with
+  static child route registrations and bridge exact matching Go HTTP clients to
+  local handlers, including chained group calls such as
+  `app.Group("/api").Get("/users/{id}", handler)`, nested assigned groups such
+  as `v1 := api.Group("/v1")`, and chained groups from assigned parent groups
+  such as `api.Group("/admin").Get(...)`.
+- Terraform/HCL blocks emit resources, modules, variables, outputs, config
+  targets, and exact intra-module `RESOURCE_DEPENDS_ON` edges for block
+  references.
+
+Open:
+
+- Cross-file Kubernetes resource resolution is implemented for named
+  ConfigMap/Secret/service-account/PVC/RBAC/owner/Ingress/HPA/Gateway API
+  HTTPRoute backend, parent Gateway, and Gateway listener certificate
+  references, IngressClass, StorageClass, and PersistentVolume references,
+  PVC dataSource/dataSourceRef references, VolumeSnapshot PVC source
+  references, VolumeSnapshotContent snapshot references, metadata Namespace
+  references, RuntimeClass references, PriorityClass references,
+  VerticalPodAutoscaler targetRefs, Service selector matches,
+  PodDisruptionBudget selector and matchExpression matches, NetworkPolicy podSelector and
+  matchExpression matches, Prometheus Operator ServiceMonitor selector and
+  matchExpression matches, Prometheus Operator ServiceMonitor auth/TLS Secret
+  refs, and Prometheus Operator PodMonitor selector, matchExpression, and
+  auth/TLS Secret refs when the target resource symbol exists in the same
+  provider snapshot. Workload selector matching includes CronJob job-template
+  labels and Rollout-style workload labels. Custom-controller coverage also
+  includes KEDA authentication refs, cert-manager issuer refs and Issuer/
+  ClusterIssuer Secret refs such as `privateKeySecretRef` and DNS solver
+  Secret refs, External Secrets secret-store refs, ExternalSecret and
+  ClusterExternalSecret target Secret refs, Bitnami SealedSecret target
+  Secret refs, Argo
+  WorkflowTemplate refs, Argo Rollouts AnalysisTemplate refs, Argo CD
+  Application/AppProject refs, Tekton Pipeline/Task refs, ServiceBinding
+  service/workload refs, Knative Trigger broker/subscriber refs, Flux CD source, chart, dependsOn, and HelmRelease valuesFrom ConfigMap/Secret refs,
+  Crossplane ProviderConfig/Composition/resource/connection Secret refs, Istio
+  VirtualService/DestinationRule refs, and Stakater Reloader ConfigMap/Secret
+  reload annotations.
+  Remaining Kubernetes resource gaps include less common Kubernetes controllers
+  beyond these selectors and other custom resource conventions.
+- Broad framework-specific IaC/service modeling remains partial.
 
 Acceptance:
 
@@ -421,7 +671,8 @@ Update `entire-sem` docs as work lands:
 - `README.md`: supported languages, commands, current limits.
 - `docs/semantic_provider_requirements.md`: schema and relation vocabulary.
 - New `docs/relation-confidence.md`: confidence bands and warning codes.
-- New `docs/language-support.md`: exact per-language support matrix.
+- Delivered `docs/language-support.md`: exact support matrix separating
+  parser-backed semantic languages from inventory-only filetype coverage.
 - New `docs/benchmarks.md`: reproducible benchmark commands and results.
 
 ## Risks

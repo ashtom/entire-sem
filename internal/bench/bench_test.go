@@ -3,6 +3,7 @@ package bench
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,29 @@ func Check(token string) bool {
 	}
 	if !contains(metrics.Languages, "Go") {
 		t.Fatalf("languages = %#v", metrics.Languages)
+	}
+}
+
+func TestMeasureRepoEnforcesLiveRSSGuard(t *testing.T) {
+	if maxRSSBytesCurrent() == 0 {
+		t.Skip("process RSS is not available on this platform")
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", `package main
+
+func main() {}
+`)
+
+	metrics, err := MeasureRepoWithOptions(t.Context(), "local/sample", "Go", dir, "bench-test", "fast", MeasureOptions{MaxRSSBytes: 1})
+	if err == nil {
+		t.Fatalf("expected live RSS guardrail error, got metrics %#v", metrics)
+	}
+	if !strings.Contains(err.Error(), "memory guardrail failed during measurement") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(metrics.Error, "memory guardrail failed during measurement") {
+		t.Fatalf("metrics error not recorded: %#v", metrics)
 	}
 }
 
